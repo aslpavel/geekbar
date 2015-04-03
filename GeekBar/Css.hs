@@ -1,7 +1,5 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
 module GeekBar.Css ( Selector
-                   -- Combinators
-                   , (!.), (!#), (!^), (!>), (!|), (!~), (!+)
                    -- Parser
                    , selectorP
                    ) where
@@ -10,10 +8,14 @@ import GeekBar.Node
 import GeekBar.Props
 
 import Control.Lens
-import Control.Applicative ((<|>))
-import Control.Monad       ((<=<))
-import Data.Monoid         (Monoid(..), (<>))
-import qualified Data.Attoparsec.ByteString as A
+import Control.Applicative  (Applicative(..), Alternative(..)
+                            ,(<|>), (*>), (<*), (<*>), many)
+import Control.Monad        ((<=<))
+import Data.Char            (isSpace)
+import Data.Functor         ((<$>), ($>))
+import Data.List            (foldl1', foldl')
+import Data.Monoid          (Monoid(..))
+import qualified Data.Attoparsec.Text as A
 import qualified Data.Set        as S
 import qualified Data.Text       as T
 
@@ -31,54 +33,154 @@ instance Monoid Selector where
 -- Selector combinators
 --
 -- | Predicate selector
-cond :: (NodeZ -> Bool) -> Selector
-cond p = Selector $ \z -> if p z then Just z else Nothing
+condS :: (NodeZ -> Bool) -> Selector
+condS p = Selector $ \z -> if p z then Just z else Nothing
 
 -- | Class selector = ".class"
-(!.) :: Selector -> T.Text -> Selector
-a !. k = a <> cond (S.member k . (^. zfocus.props.classes))
+classS :: T.Text -> Selector
+classS k = condS (S.member k . (^. zfocus.props.classes))
+
+-- | Type selector = "type"
+typeS :: T.Text -> Selector
+typeS = classS
 
 -- | Uid selector = "#uid"
-(!#) :: Selector -> T.Text -> Selector
-a !# u = a <> cond ((u ==) . (^. zfocus.props.uid))
+uidS :: T.Text -> Selector
+uidS u = condS ((u ==) . (^. zfocus.props.uid))
 
 -- | Compose with ansestor selector = "selector selector"
-(!^) :: Selector -> Selector -> Selector
-a !^ b = parent a <> b
-    where parent s = Selector $ \z -> fmap (s ^. select) (zups z) ^? traverse . _Just
+childS :: Selector -> Selector
+childS s = Selector $ \z -> fmap (s ^. select) (zups z) ^? traverse . _Just
 
 -- | Compose with dirct parent selector = "selector > selector"
-(!>) :: Selector -> Selector -> Selector
-a !> b = Selector ((a ^. select =<<) . zup) <> b
+directChildS :: Selector -> Selector
+directChildS s = Selector ((s ^. select =<<) . zup)
 
 -- | Compose with alternative selector = "selector, selector"
-(!|) :: Selector -> Selector -> Selector
-a !| b = Selector $ \z -> (b ^. select) z <|> (a ^. select) z
+orS :: Selector -> Selector -> Selector
+orS a b = Selector $ \z -> (b ^. select) z <|> (a ^. select) z
 
 -- | Compose with left sibling selctor = "selector ~ selector"
-(!~) :: Selector -> Selector -> Selector
-a !~ b = sibs a <> b
-    where sibs s = Selector $ \z -> fmap (s ^. select) (zrights z) ^? traverse . _Just
+generalSiblingS :: Selector -> Selector
+generalSiblingS s = Selector $ \z -> fmap (s ^. select) (zrights z) ^? traverse . _Just
 
 -- | Conpose with immedieate left sibling selector = "selector + selector"
-(!+) :: Selector -> Selector -> Selector
-a !+ b = Selector ((a ^. select =<<) . zleft) <> b
+adjacentSiblingS :: Selector -> Selector
+adjacentSiblingS s = Selector ((s ^. select =<<) . zleft)
 
 -- | First child selector
-firstChild :: Selector -> Selector
-firstChild s = s <> Selector (\z -> maybe (Just z) (const Nothing) (zleft z))
+firstChildS :: Selector
+firstChildS = Selector $ \z -> maybe (Just z) (const Nothing) (zleft z)
 
 -- | Last child selector
-lastChild :: Selector -> Selector
-lastChild s = s <> Selector (\z -> maybe (Just z) (const Nothing) (zright z))
+lastChildS :: Selector
+lastChildS = Selector $ \z -> maybe (Just z) (const Nothing) (zright z)
+
+-- | Predicate used in nth- family of selectors
+indexPredicate :: Int -> Int -> Int -> Bool
+indexPredicate a b i
+    | a == 0       = i == b
+    | (i-b)*a >= 0 = mod (i-b) a == 0
+    | otherwise   = False
+
+-- | Nth child
+nthChildS :: (Int,Int) -> Selector
+nthChildS (a,b) = condS (indexPredicate a b . (+1) . length . zlefts)
+
+-- | Nth last child
+nthLastChildS :: (Int,Int) -> Selector
+nthLastChildS (a,b) = condS (indexPredicate a b . (+1) . length . zrights)
+
+-- | Hover selector
+hoverS :: Selector
+hoverS = condS (const False)
 
 --------------------------------------------------------------------------------
 -- Selector parser
 --
 selectorP :: A.Parser Selector
-selectorP = undefined
+selectorP = group
+    where
+      -- Based on "http://www.w3.org/TR/css3-selectors/#grammar"
+      -- name = [_a-zA-Z0-9-]+
+      name :: A.Parser T.Text
+      name  = A.takeWhile1 (A.inClass "_a-zA-Z0-9-")
+      -- identifier = [-]?[_a-zA-Z][_a-zA-Z0-9-]*
+      ident :: A.Parser T.Text
+      ident = fmap fst $ A.match $ do
+                A.skip (== '-') <|> return ()
+                A.skip (A.inClass "_a-zA-Z")
+                A.skipWhile (A.inClass "_a-zA-Z0-9-")
+      -- spaces = [ \t\r\n\f]*
+      spaces :: A.Parser ()
+      spaces = A.skipWhile isSpace
+      -- selector group
+      group :: A.Parser Selector
+      group = foldl1' orS <$> selector `A.sepBy1` (spaces *> A.char ',' <* spaces)
+      -- selector
+      selector :: A.Parser Selector
+      selector = do s   <- primitive
+                    ops <- many $ (,) <$> combinator <*> primitive
+                    return $ foldl' (\l (o, r) -> l `o` r) s ops
+      -- combinators (child, direct chilod, adjacent sibling, general sibling)
+      combinator :: A.Parser (Selector -> Selector -> Selector)
+      combinator = do o <- spaces *> A.satisfy (\c -> c == '+' || c == '>' || c == '~') <* spaces
+                           <|> (A.space >> spaces $> ' ')
+                      return $ mappend . case o of
+                                           ' ' -> childS
+                                           '>' -> directChildS
+                                           '+' -> adjacentSiblingS
+                                           '~' -> generalSiblingS
+      -- simple selector sequence
+      primitive :: A.Parser Selector
+      primitive = do s  <- tupe <|> universal <|> chain
+                     ss <- many chain
+                     return . mconcat $ s : ss
+          where chain = hash <|> klass <|> attrib <|> pseudo <|> negation
+      -- type selector
+      tupe :: A.Parser Selector
+      tupe = typeS <$> ident
+      -- universal selector
+      universal :: A.Parser Selector
+      universal = A.char '*' *> mempty
+      -- hash selector
+      hash :: A.Parser Selector
+      hash = uidS <$> (A.char '#' *> name)
+      -- class selector
+      klass :: A.Parser Selector
+      klass = classS <$> (A.char '.' *> ident)
+      -- attribute selector
+      attrib :: A.Parser Selector
+      attrib = empty
+      -- pseudo selector
+      pseudo :: A.Parser Selector
+      pseudo = do A.char ':'
+                  sel <- ident <|> (T.cons <$> A.char ':' <*> ident)
+                  case sel of
+                    "hover"          -> return hoverS
+                    "first-chilld"   -> return firstChildS
+                    "last-child"     -> return lastChildS
+                    "nth-child"      -> nthChildS     <$> nthPred
+                    "nth-last-child" -> nthLastChildS <$> nthPred
+                    _                -> empty
+      nthPred :: A.Parser (Int,Int)
+      nthPred = do A.char '(' >> spaces
+                   ab <-     (A.string "odd"  $> (2,1))
+                        <|> (A.string "even" $> (2,0))
+                        <|> ((,) <$> (A.signed A.decimal <* A.char 'n' <* spaces)
+                                 <*> ((A.char '+' *> spaces *> A.decimal) <|>
+                                      (A.char '-' *> spaces *> fmap negate A.decimal)))
+                        <|> ((,) 0 <$> A.signed A.decimal)
+                   spaces >> A.char ')'
+                   return ab
+      -- negation selector
+      negation :: A.Parser Selector
+      negation = do A.string ":not(" >> spaces
+                    sel <- tupe <|> universal <|> hash <|> klass <|> attrib <|> pseudo
+                    spaces >> A.char ')'
+                    return sel
 
--- | Compose with
+
 --------------------------------------------------------------------------------
 -- Selectors
 -- 
