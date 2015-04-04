@@ -8,25 +8,33 @@ import GeekBar.Node
 import GeekBar.Props
 
 import Control.Lens
-import Control.Applicative  (Applicative(..), Alternative(..)
-                            ,(<|>), (*>), (<*), (<*>), many)
+import Control.Applicative  (Alternative(..), (<|>), many)
 import Control.Monad        ((<=<))
 import Data.Char            (isSpace)
-import Data.Functor         ((<$>), ($>))
+import Data.Functor         (($>))
 import Data.List            (foldl1', foldl')
-import Data.Monoid          (Monoid(..))
+import Data.Monoid          ((<>))
 import qualified Data.Attoparsec.Text as A
 import qualified Data.Set        as S
 import qualified Data.Text       as T
 
 
 -- | Css selector
-newtype Selector = Selector {_select :: NodeZ -> Maybe NodeZ}
+data Selector = Selector { _select :: NodeZ -> Maybe NodeZ
+                         , _repr   :: String
+                         --, _sepcifity :: (Int, Int)
+                         }
 makeLenses ''Selector
 
+instance Show Selector where
+    show s = case s ^. repr of
+               "" -> "s\"*\""
+               r  -> "s\"" ++ r ++ "\""
+
 instance Monoid Selector where
-    mempty        = Selector Just
-    a `mappend` b = Selector $ a ^. select <=< b ^. select
+    mempty        = Selector Just ""
+    a `mappend` b = Selector (a ^. select <=< b ^. select)
+                             (a ^. repr <> b ^. repr)
 
 
 --------------------------------------------------------------------------------
@@ -34,47 +42,51 @@ instance Monoid Selector where
 --
 -- | Predicate selector
 condS :: (NodeZ -> Bool) -> Selector
-condS p = Selector $ \z -> if p z then Just z else Nothing
+condS p = Selector (\z -> if p z then Just z else Nothing) "<pred>"
 
 -- | Class selector = ".class"
 classS :: T.Text -> Selector
-classS k = condS (S.member k . (^. zfocus.props.classes))
+classS k = condS (S.member k . (^. zfocus.props.classes)) & repr .~ ('.' : T.unpack k)
 
 -- | Type selector = "type"
 typeS :: T.Text -> Selector
-typeS = classS
+typeS = set repr . T.unpack <*> classS
 
 -- | Uid selector = "#uid"
 uidS :: T.Text -> Selector
-uidS u = condS ((u ==) . (^. zfocus.props.uid))
+uidS u = condS ((u ==) . (^. zfocus.props.uid)) & repr .~ ('#' : T.unpack u)
 
 -- | Compose with ansestor selector = "selector selector"
 childS :: Selector -> Selector
-childS s = Selector $ \z -> fmap (s ^. select) (zups z) ^? traverse . _Just
+childS s = Selector (\z -> fmap (s ^. select) (zups z) ^? traverse . _Just)
+                    (s ^. repr ++ " ")
 
 -- | Compose with dirct parent selector = "selector > selector"
 directChildS :: Selector -> Selector
-directChildS s = Selector ((s ^. select =<<) . zup)
+directChildS s = Selector ((s ^. select =<<) . zup) (s ^. repr ++ " > ")
 
 -- | Compose with alternative selector = "selector, selector"
 orS :: Selector -> Selector -> Selector
-orS a b = Selector $ \z -> (b ^. select) z <|> (a ^. select) z
+orS a b = Selector (\z -> (b ^. select) z <|> (a ^. select) z)
+                   (a ^. repr ++ ", " ++ b ^. repr)
 
 -- | Compose with left sibling selctor = "selector ~ selector"
 generalSiblingS :: Selector -> Selector
-generalSiblingS s = Selector $ \z -> fmap (s ^. select) (zrights z) ^? traverse . _Just
+generalSiblingS s = Selector (\z -> fmap (s ^. select) (zrights z) ^? traverse . _Just)
+                             (s ^. repr ++ " ~ ")
 
 -- | Conpose with immedieate left sibling selector = "selector + selector"
 adjacentSiblingS :: Selector -> Selector
 adjacentSiblingS s = Selector ((s ^. select =<<) . zleft)
+                              (s ^. repr ++ " + ")
 
 -- | First child selector
 firstChildS :: Selector
-firstChildS = Selector $ \z -> maybe (Just z) (const Nothing) (zleft z)
+firstChildS = Selector (\z -> maybe (Just z) (const Nothing) (zleft z)) ":first-child"
 
 -- | Last child selector
 lastChildS :: Selector
-lastChildS = Selector $ \z -> maybe (Just z) (const Nothing) (zright z)
+lastChildS = Selector (\z -> maybe (Just z) (const Nothing) (zright z)) ":last-child"
 
 -- | Predicate used in nth- family of selectors
 indexPredicate :: Int -> Int -> Int -> Bool
@@ -83,17 +95,31 @@ indexPredicate a b i
     | (i-b)*a >= 0 = mod (i-b) a == 0
     | otherwise   = False
 
+-- | Index predicate prepresentatin
+indexPredicateRepr :: Int -> Int -> String
+indexPredicateRepr a b
+    | a == 0     = show b
+    | a == 1     = "n"  ++ showSigned b
+    | a == -1    = "-n" ++ showSigned b
+    | otherwise = show a ++ "n" ++ showSigned b
+    where showSigned v
+              | v > 0 = "+" ++ show v
+              | v < 0 = "-" ++ show (negate v)
+              | v == 0 = ""
+
 -- | Nth child
 nthChildS :: (Int,Int) -> Selector
 nthChildS (a,b) = condS (indexPredicate a b . (+1) . length . zlefts)
+                & repr .~ ":nth-child(" ++ indexPredicateRepr a b ++ ")"
 
 -- | Nth last child
 nthLastChildS :: (Int,Int) -> Selector
 nthLastChildS (a,b) = condS (indexPredicate a b . (+1) . length . zrights)
+                    & repr .~ ":nth-last-child(" ++ indexPredicateRepr a b ++ ")"
 
 -- | Hover selector
 hoverS :: Selector
-hoverS = condS (const False)
+hoverS = condS (const False) & repr .~ ":hover"
 
 --------------------------------------------------------------------------------
 -- Selector parser
@@ -142,7 +168,7 @@ selectorP = group
       tupe = typeS <$> ident
       -- universal selector
       universal :: A.Parser Selector
-      universal = A.char '*' *> mempty
+      universal = A.char '*' $> mempty
       -- hash selector
       hash :: A.Parser Selector
       hash = uidS <$> (A.char '#' *> name)
@@ -165,12 +191,16 @@ selectorP = group
                     _                -> empty
       nthPred :: A.Parser (Int,Int)
       nthPred = do A.char '(' >> spaces
-                   ab <-     (A.string "odd"  $> (2,1))
-                        <|> (A.string "even" $> (2,0))
-                        <|> ((,) <$> (A.signed A.decimal <* A.char 'n' <* spaces)
-                                 <*> ((A.char '+' *> spaces *> A.decimal) <|>
-                                      (A.char '-' *> spaces *> fmap negate A.decimal)))
-                        <|> ((,) 0 <$> A.signed A.decimal)
+                   ab <-     A.string "odd"  $> (2,1)
+                      <|> A.string "even" $> (2,0)
+                      <|> (,) <$> (   A.signed A.decimal
+                                  <|> A.char '-' *> return (-1)
+                                  <|> return 1
+                                  ) <* A.char 'n' <* spaces
+                              <*> (   A.char '+' *> spaces *> A.decimal
+                                  <|> A.char '-' *> spaces *> fmap negate A.decimal
+                                  <|> return 0)
+                      <|> (,) 0 <$> A.signed A.decimal
                    spaces >> A.char ')'
                    return ab
       -- negation selector
@@ -183,7 +213,7 @@ selectorP = group
 
 --------------------------------------------------------------------------------
 -- Selectors
--- 
+--
 -- Supported selectors:
 --   *       - any
 --   .class  - class matches
@@ -194,7 +224,7 @@ selectorP = group
 --   a ~ b   - a,b are siblings, any b that follows a
 --   a + b   - a,b are siblings, b immediatly follows a
 --   a:hover - a hovered by mouse
--- 
+--
 
 {-
 -- | "*" selector
