@@ -1,0 +1,71 @@
+name:            geekbar
+version:         0.1.0.0
+-- synopsis:
+-- description:
+homepage:        https://github.com/aslpavel/geekbar
+license:         BSD3
+license-file:    LICENSE
+author:          Pavel Aslanov
+maintainer:      Pavel Aslanov <asl.pavel@gmail.com>
+-- copyright:
+category:        Graphics
+build-type:      Simple
+cabal-version:   >=1.10
+-- extra-source-files:
+
+
+executable geekbar
+  main-is:          Main.hs
+  other-extensions: FlexibleContexts, ScopedTypeVariables, TemplateHaskell, OverloadedStrings
+  default-language: Haskell2010
+  hs-source-dirs:   .
+  other-modules:
+    GeekBar
+    GeekBar.Css
+    GeekBar.Layout
+    GeekBar.Node
+    GeekBar.NTree
+    GeekBar.Props
+    GeekBar.Wire
+  build-depends:
+    attoparsec >=0.12 && <0.13,
+    base       >=4.8 && <4.9,
+    containers >=0.5 && <0.6,
+    lens       >=4.9 && <4.10,
+    mtl        >=2.2 && <2.3,
+    netwire    >=5.0 && <5.1,
+    stm        >=2.4 && <2.5,
+    text       >=1.2 && <1.3
+
+
+test-suite test-geekbar
+  type:             detailed-0.9
+  test-module:      Tests
+  hs-source-dirs:   . tests
+  default-language: Haskell2010
+  other-modules:
+    -- tests
+    Tests.Css
+    -- geekbar
+    GeekBar
+    GeekBar.Css
+    GeekBar.Layout
+    GeekBar.Node
+    GeekBar.NTree
+    GeekBar.Props
+    GeekBar.Wire
+  build-depends:
+     -- tests
+    cabal-test-quickcheck >=0.1 && <0.2,
+    Cabal      >=1.22 && <1.23,
+    QuickCheck >=2.8 && <2.9,
+    -- geekbar
+    attoparsec >=0.12 && <0.13,
+    base       >=4.8 && <4.9,
+    containers >=0.5 && <0.6,
+    lens       >=4.9 && <4.10,
+    mtl        >=2.2 && <2.3,
+    netwire    >=5.0 && <5.1,
+    stm        >=2.4 && <2.5,
+    text       >=1.2 && <1.3
+
