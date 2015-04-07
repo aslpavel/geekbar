@@ -1,5 +1,9 @@
 {-# LANGUAGE TemplateHaskell, OverloadedStrings #-}
 module GeekBar.Css ( Selector
+                   , universalS , classS, typeS, uidS
+                   , childS, directChildS, firstChildS, lastChildS, nthChildS, nthLastChildS
+                   , generalSiblingS, adjacentSiblingS
+                   , orS, notS, hoverS
                    -- Parser
                    , selectorP
                    ) where
@@ -27,9 +31,7 @@ data Selector = Selector { _select :: NodeZ -> Maybe NodeZ
 makeLenses ''Selector
 
 instance Show Selector where
-    show s = case s ^. repr of
-               "" -> "s\"*\""
-               r  -> "s\"" ++ r ++ "\""
+    show = view repr
 
 instance Monoid Selector where
     mempty        = Selector Just ""
@@ -40,6 +42,11 @@ instance Monoid Selector where
 --------------------------------------------------------------------------------
 -- Selector combinators
 --
+
+-- | Universal selector
+universalS :: Selector
+universalS = mempty & repr .~ "*"
+
 -- | Predicate selector
 condS :: (NodeZ -> Bool) -> Selector
 condS p = Selector (\z -> if p z then Just z else Nothing) "<pred>"
@@ -70,6 +77,11 @@ orS :: Selector -> Selector -> Selector
 orS a b = Selector (\z -> (b ^. select) z <|> (a ^. select) z)
                    (a ^. repr ++ ", " ++ b ^. repr)
 
+-- | Negation selector
+notS :: Selector -> Selector
+notS s = Selector (\z -> case (s ^. select) z of {Just _ -> Nothing; _ -> Just z})
+                (":not(" ++ s ^. repr ++ ")")
+
 -- | Compose with left sibling selctor = "selector ~ selector"
 generalSiblingS :: Selector -> Selector
 generalSiblingS s = Selector (\z -> fmap (s ^. select) (zrights z) ^? traverse . _Just)
@@ -98,10 +110,12 @@ indexPredicate a b i
 -- | Index predicate prepresentatin
 indexPredicateRepr :: Int -> Int -> String
 indexPredicateRepr a b
-    | a == 0     = show b
-    | a == 1     = "n"  ++ showSigned b
-    | a == -1    = "-n" ++ showSigned b
-    | otherwise = show a ++ "n" ++ showSigned b
+    | a == 2 && b == 1 = "odd"
+    | a == 2 && b == 0 = "even"
+    | a == 0         = show b
+    | a == 1         = "n"  ++ showSigned b
+    | a == -1        = "-n" ++ showSigned b
+    | otherwise     = show a ++ "n" ++ showSigned b
     where showSigned v
               | v > 0 = "+" ++ show v
               | v < 0 = "-" ++ show (negate v)
@@ -168,7 +182,7 @@ selectorP = group
       tupe = typeS <$> ident
       -- universal selector
       universal :: A.Parser Selector
-      universal = A.char '*' $> mempty
+      universal = A.char '*' $> universalS
       -- hash selector
       hash :: A.Parser Selector
       hash = uidS <$> (A.char '#' *> name)
@@ -184,14 +198,14 @@ selectorP = group
                   sel <- ident <|> (T.cons <$> A.char ':' <*> ident)
                   case sel of
                     "hover"          -> return hoverS
-                    "first-chilld"   -> return firstChildS
+                    "first-child"    -> return firstChildS
                     "last-child"     -> return lastChildS
                     "nth-child"      -> nthChildS     <$> nthPred
                     "nth-last-child" -> nthLastChildS <$> nthPred
                     _                -> empty
       nthPred :: A.Parser (Int,Int)
       nthPred = do A.char '(' >> spaces
-                   ab <-     A.string "odd"  $> (2,1)
+                   ab <-   A.string "odd"  $> (2,1)
                       <|> A.string "even" $> (2,0)
                       <|> (,) <$> (   A.signed A.decimal
                                   <|> A.char '-' *> return (-1)
@@ -208,7 +222,7 @@ selectorP = group
       negation = do A.string ":not(" >> spaces
                     sel <- tupe <|> universal <|> hash <|> klass <|> attrib <|> pseudo
                     spaces >> A.char ')'
-                    return sel
+                    return $ notS sel
 
 
 --------------------------------------------------------------------------------
