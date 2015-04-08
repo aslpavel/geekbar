@@ -1,4 +1,3 @@
-{-# LANGUAGE ScopedTypeVariables #-}
 module Tests.Css (tests) where
 
 import Distribution.TestSuite.QuickCheck
@@ -18,6 +17,7 @@ instance Arbitrary Selector where
                    case selectors of
                      [s]    -> return s
                      s : ss -> foldlM (\l r -> (\op -> l `op` r) <$> combinator) s ss
+                     []     -> error "Selectors list must not be empty"
         where
           -- identifiers
           identChars = '-' : '_' : ['a'..'z'] ++ ['A'..'Z']
@@ -52,10 +52,10 @@ instance Arbitrary Selector where
 
 
 -- | Selector representation must be parseble and be equal to parseds selector representation
-prop_Parsable (s :: Selector) =
-    case A.parseOnly selectorP (T.pack . show $ s) of
-      Right s' -> show s' === show s
-      Left  _  -> label "Parser failed" False
+prop_Parsable :: Selector -> Property
+prop_Parsable s = case A.parseOnly selectorP (T.pack . show $ s) of
+                    Right s' -> show s' === show s
+                    Left  _  -> label "Parser failed" False
 
 
 -- | All tests in this suite
